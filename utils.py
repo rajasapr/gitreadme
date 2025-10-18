@@ -5,28 +5,29 @@ from typing import Tuple, List
 import httpx
 
 def fetch_compare_diff(owner: str, repo: str, before: str, after: str) -> Tuple[str, List[str]]:
-    """
-    Uses public GitHub Compare API (no auth required for public repos).
-    Returns (unified_diff_text, [changed_file_paths]).
-    """
+    import os, httpx
     url = f"https://api.github.com/repos/{owner}/{repo}/compare/{before}...{after}"
     headers = {"Accept": "application/vnd.github+json"}
+    pat = os.getenv("GITHUB_PAT")
+    if pat:
+        headers["Authorization"] = f"Bearer {pat}"
     with httpx.Client(timeout=20) as client:
         r = client.get(url, headers=headers)
         r.raise_for_status()
         data = r.json()
     files = data.get("files", [])
-    changed_files = []
-    patches = []
+    changed_files, patches = [], []
     for f in files:
         filename = f.get("filename")
         patch = f.get("patch")
-        status = f.get("status")
-        if filename and patch:
+        if filename:
             changed_files.append(filename)
+        # Some large/binary changes have no 'patch'; we still want changed_files listed
+        if filename and patch:
             patches.append(f"--- a/{filename}\n+++ b/{filename}\n{patch}")
     unified = "\n\n".join(patches)
     return unified, changed_files
+
 
 def clone_and_prepare(repo_https_url: str, branch: str = "main") -> str:
     """Clones repo into a temp dir and checks out target branch."""

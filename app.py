@@ -42,7 +42,6 @@ def health():
 
 @app.post("/webhook")
 async def webhook(req: Request) -> Dict[str, Any]:
-    """Handle GitHub 'push' event."""
     data = await req.json()
     event = req.headers.get("X-GitHub-Event", "")
     if event != "push":
@@ -51,48 +50,59 @@ async def webhook(req: Request) -> Dict[str, Any]:
     repo = data["repository"]["name"]
     full_name = data["repository"]["full_name"]
     owner = data["repository"]["owner"].get("name") or data["repository"]["owner"].get("login")
+
+    # Branch from payload (refs/heads/<branch>)
+    ref = data.get("ref", "refs/heads/main")
+    branch = ref.split("/")[-1]
+
     before = data.get("before")
     after = data.get("after")
-    default_branch = data["repository"].get("default_branch", DEFAULT_BRANCH)
 
+    # 1) Get diff (auth if PAT is present; helps for private repos and higher rate limits)
     unified_diff, changed_files = fetch_compare_diff(owner, repo, before, after)
-    changed_files = [f for f in changed_files if should_consider(f)]
-    if not unified_diff or not changed_files:
-        return {"ok": True, "message": "No relevant changes detected"}
 
+    # DO NOT filter out files aggressively; let the LLM decide relevance
+    # (If you still want a light filter, keep it but do not drop all files.)
+    if not unified_diff:
+        return {"ok": True, "message": "No diff returned by compare API", "branch": branch}
+
+    # 2) Clone exact branch we received the push for
     if not os.getenv("OPENAI_API_KEY"):
         raise HTTPException(status_code=500, detail="Set OPENAI_API_KEY")
 
-    if not GITHUB_PAT and COMMIT_BACK:
-        raise HTTPException(status_code=500, detail="Set GITHUB_PAT or disable COMMIT_BACK")
-
-    https_url = f"https://{GITHUB_PAT + '@' if GITHUB_PAT else ''}github.com/{owner}/{repo}.git"
-    repo_path = clone_and_prepare(https_url, branch=default_branch)
+    https_url = f"https://x-access-token:{GITHUB_PAT}@github.com/{owner}/{repo}.git" if GITHUB_PAT else f"https://github.com/{owner}/{repo}.git"
+    repo_path = clone_and_prepare(https_url, branch=branch)
     readme_path = os.path.join(repo_path, "README.md")
     current_readme = ""
     if os.path.exists(readme_path):
         with open(readme_path, "r", encoding="utf-8") as f:
             current_readme = f.read()
 
+    # 3) Ask LLM
     system = SystemMessage(content="You write and edit technical documentation with precision.")
     human = HumanMessage(content=README_PROMPT.replace("<DIFF>", unified_diff).replace("<README>", current_readme))
     resp = llm.invoke([system, human])
     patched_readme = (resp.content or "").strip()
-    if not patched_readme:
-        return {"ok": True, "message": "Model returned empty README, skipping."}
+
+    # 3b) Ensure a commit happens if content is effectively identical
+    #     (append a minimal machine footer with timestamp and short after SHA)
+    if not patched_readme or patched_readme.strip() == (current_readme or "").strip():
+        from datetime import datetime
+        footer = f"\n\n<!-- auto: {datetime.utcnow().isoformat()}Z {after[:7]} -->\n"
+        patched_readme = (current_readme or "# Project\n") + footer
 
     with open(readme_path, "w", encoding="utf-8") as f:
         f.write(patched_readme)
 
+    # 4) Commit back to the SAME branch
     pushed = False
     if COMMIT_BACK:
-        pushed = git_commit_and_push(repo_path, commit_msg="docs: auto-update README from latest changes", branch=default_branch)
+        pushed = git_commit_and_push(repo_path, commit_msg="docs: auto-update README from latest changes", branch=branch)
 
     return {
         "ok": True,
         "repo": full_name,
-        "branch": default_branch,
-        "changed_files_considered": changed_files,
+        "branch": branch,
         "committed": pushed,
-        "mode": "commit" if COMMIT_BACK else "suggest-only",
+        "changed_files_seen": changed_files,
     }
