@@ -33,6 +33,8 @@ Task:
 def should_consider(filename: str) -> bool:
     important_exts = (".py", ".ts", ".js", ".md", ".yml", ".yaml", ".toml", ".json")
     return filename.endswith(important_exts) or filename.startswith(("docs/", "app/", "src/"))
+def this_is_test():
+    return "Test sucess"
 
 @app.get("/health")
 def health():
