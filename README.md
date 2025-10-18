@@ -1,0 +1,27 @@
+# README Agent (LangChain + FastAPI, Render-deployable)
+
+This service listens to **GitHub push** webhooks, summarizes code changes with **LangChain**/**OpenAI**, and auto-updates your repository's `README.md`. Designed to be minimal and easy to deploy on **Render**.
+
+## How it works
+1. GitHub sends a **push** event to `/webhook`.
+2. The server calls GitHub **Compare API** to get a unified diff between the previous and latest commits.
+3. A LangChain `ChatOpenAI` model generates a full, updated `README.md` based on user-facing changes.
+4. The service clones your repo, writes the new README, and pushes a commit.
+
+> For public repos, reading diffs doesn't need auth. Pushing changes uses a single **GITHUB_PAT** (env var).
+
+## Environment variables
+- `OPENAI_API_KEY` — required for the LLM.
+- `GITHUB_PAT` — GitHub token with repo **contents: write** to push commits.
+- `COMMIT_BACK` — "true" to push changes; "false" to only compute suggestions.
+- `DEFAULT_BRANCH` — branch to update (default "main").
+
+## Endpoints
+- `GET /health` — health check.
+- `POST /webhook` — GitHub webhook (push event only).
+
+## Security
+For simplicity, the default project doesn't validate webhook signatures. In production, verify `X-Hub-Signature-256`.
+
+## License
+MIT
